@@ -70,7 +70,7 @@ class FullBlockTest(ComparisonTestFramework):
 
     def add_options(self, parser):
         super().add_options(parser)
-        parser.add_option("--runbarelyexpensive", dest="runbarelyexpensive", default=True)
+        parser.add_option("--runbarelyexpensive", dest="runbarelyexpensive", default=False, action="store_true")
 
     def run_test(self):
         self.test = TestManager(self, self.options.tmpdir)
@@ -365,12 +365,25 @@ class FullBlockTest(ComparisonTestFramework):
         #                      \-> b3 (1) -> b4 (2)
         tip(15)
         b23 = block(23, spend=out[6])
-        tx = CTransaction()
-        script_length = MAX_BLOCK_SIZE - len(b23.serialize()) - 69
-        script_output = CScript([b'\x00' * script_length])
-        tx.vout.append(CTxOut(0, script_output))
-        tx.vin.append(CTxIn(COutPoint(b23.vtx[1].sha256, 0)))
-        b23 = update_block(23, [tx])
+        # Split UTXO into 8 coins
+        funding_tx = CTransaction()
+        funding_tx.vin.append(CTxIn(COutPoint(b23.vtx[1].sha256, 0)))
+        for i in range(8):
+            funding_tx.vout.append(CTxOut(0,CScript([OP_TRUE])))
+        b23 = update_block(23, [funding_tx])
+        # Add 8 near-1MB transactions
+        bigtxes = []
+        for i in range(8):
+            tx = CTransaction()
+            tx.vin.append(CTxIn(COutPoint(funding_tx.sha256, i)))
+            if (i < 7):
+                script_length = 999940 - 69
+            else:
+                script_length = MAX_BLOCK_SIZE - len(b23.serialize()) - 7*999940 - 69
+            script_output = CScript([b'\x00' * script_length])
+            tx.vout.append(CTxOut(0, script_output))
+            bigtxes.append(tx)
+        b23 = update_block(23, bigtxes)
         # Make sure the math above worked out to produce a max-sized block
         assert_equal(len(b23.serialize()), MAX_BLOCK_SIZE)
         yield accepted()
@@ -379,16 +392,23 @@ class FullBlockTest(ComparisonTestFramework):
         # Make the next block one byte bigger and check that it fails
         tip(15)
         b24 = block(24, spend=out[6])
-        script_length = MAX_BLOCK_SIZE - len(b24.serialize()) - 69
-        script_output = CScript([b'\x00' * (script_length+1)])
-        tx.vout = [CTxOut(0, script_output)]
-        b24 = update_block(24, [tx])
+        b24 = update_block(24, [funding_tx])
+        script_length = MAX_BLOCK_SIZE - len(b24.serialize()) - 7*999940 - 69 + 1
+        script_output = CScript([b'\x00' * (script_length)])
+        bigtxes[7].vout = [CTxOut(0, script_output)]
+        b24 = update_block(24, bigtxes)
         assert_equal(len(b24.serialize()), MAX_BLOCK_SIZE+1)
+        yield rejected() # Network sanity check will cause disconnect
 
-        ## TODO UAHF: This test has not been updated after UAHF to 8MB blocks.
-        ## Skipping.
-        if not XT_TWEAK:
-            yield rejected(RejectResult(16, b'bad-blk-length'))
+        # Reconnect
+        [c.disconnect_node() for c in self.test.connections]
+        self.test.wait_for_disconnections()
+        self.test.clear_all_connections()
+        self.test.add_all_connections(self.nodes)
+        # Ignore requests for the oversize block
+        [n.inv_hash_ignore.append(b24.sha256) for n in self.test.test_nodes]
+        NetworkThread().start()
+        self.test.wait_for_verack()
 
         block(25, spend=out[7])
         yield rejected()
@@ -917,14 +937,26 @@ class FullBlockTest(ComparisonTestFramework):
         b64a.initialize(regular_block)
         self.blocks["64a"] = b64a
         self.tip = b64a
-        tx = CTransaction()
-
+        # Split UTXO into 8 coins
+        funding_tx = CTransaction()
+        funding_tx.vin.append(CTxIn(COutPoint(b64a.vtx[1].sha256, 0)))
+        for i in range(8):
+            funding_tx.vout.append(CTxOut(0,CScript([OP_TRUE])))
+        b64a = update_block("64a", [funding_tx])
+        # Add 8 near-1MB transactions
         # use canonical serialization to calculate size
-        script_length = MAX_BLOCK_SIZE - len(b64a.normal_serialize()) - 69
-        script_output = CScript([b'\x00' * script_length])
-        tx.vout.append(CTxOut(0, script_output))
-        tx.vin.append(CTxIn(COutPoint(b64a.vtx[1].sha256, 0)))
-        b64a = update_block("64a", [tx])
+        bigtxes = []
+        for i in range(8):
+            tx = CTransaction()
+            tx.vin.append(CTxIn(COutPoint(funding_tx.sha256, i)))
+            if (i < 7):
+                script_length = 999940 - 69
+            else:
+                script_length = MAX_BLOCK_SIZE - len(b64a.normal_serialize()) - 7*999940 - 69
+            script_output = CScript([b'\x00' * script_length])
+            tx.vout.append(CTxOut(0, script_output))
+            bigtxes.append(tx)
+        b64a = update_block("64a", bigtxes)
         assert_equal(len(b64a.serialize()), MAX_BLOCK_SIZE + 8)
         yield TestInstance([[self.tip, None]])
 
@@ -1268,12 +1300,25 @@ class FullBlockTest(ComparisonTestFramework):
             spend=out[32]
             for i in range(89, LARGE_REORG_SIZE + 89):
                 b = block(i, spend)
-                tx = CTransaction()
-                script_length = MAX_BLOCK_SIZE - len(b.serialize()) - 69
-                script_output = CScript([b'\x00' * script_length])
-                tx.vout.append(CTxOut(0, script_output))
-                tx.vin.append(CTxIn(COutPoint(b.vtx[1].sha256, 0)))
-                b = update_block(i, [tx])
+                # Split UTXO into 8 coins
+                funding_tx = CTransaction()
+                funding_tx.vin.append(CTxIn(COutPoint(b.vtx[1].sha256, 0)))
+                for j in range(8):
+                    funding_tx.vout.append(CTxOut(0,CScript([OP_TRUE])))
+                b = update_block(i, [funding_tx])
+                # Add 8 near-1MB transactions
+                bigtxes = []
+                for j in range(8):
+                    tx = CTransaction()
+                    tx.vin.append(CTxIn(COutPoint(funding_tx.sha256, j)))
+                    if (j < 7):
+                        script_length = 999940 - 69
+                    else:
+                        script_length = MAX_BLOCK_SIZE - len(b.serialize()) - 7*999940 - 69
+                    script_output = CScript([b'\x00' * script_length])
+                    tx.vout.append(CTxOut(0, script_output))
+                    bigtxes.append(tx)
+                b = update_block(i, bigtxes)
                 assert_equal(len(b.serialize()), MAX_BLOCK_SIZE)
                 test1.blocks_and_transactions.append([self.tip, True])
                 save_spendable_output()

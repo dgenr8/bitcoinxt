@@ -5,7 +5,6 @@
 #define BITCOIN_RESPEND_RESPENDLOGGER_H
 
 #include "respend/respendaction.h"
-#include <string>
 
 namespace respend {
 
@@ -22,14 +21,13 @@ class RespendLogger : public RespendAction {
         void Trigger() override;
 
         void SetValid(bool v) override {
-            valid = v ? "yes" : "no";
+            valid = v;
         }
 
     private:
-        std::string orig;
-        std::string respend;
-        bool equivalent;
-        std::string valid;
+        CTxMemPool::setEntries tx1s;
+        const CTransaction* tx2;
+        bool valid;
         bool newConflict; // TX has at least 1 output that's not respent earlier
 };
 
